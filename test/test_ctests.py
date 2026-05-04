@@ -24,10 +24,6 @@ def test_abi():
     cmdline = [ pjoin(basename, 'test', 'test_abi') ]
     subprocess.check_call(cmdline)
 
-def test_loop_config():
-    """Unit test for fuse_loop_cfg setter interaction — no FUSE mount needed."""
-    subprocess.check_call([ pjoin(basename, 'test', 'test_loop_config') ])
-
 @pytest.mark.skipif('FUSE_CAP_WRITEBACK_CACHE' not in fuse_caps,
                     reason='not supported by running kernel')
 @pytest.mark.parametrize("writeback", (False, True))
@@ -162,14 +158,4 @@ def test_signals(output_checker):
     subprocess.run(cmdline, stdout=output_checker.fd, \
                    stderr=output_checker.fd, timeout=10, check=True)
     logger.debug("Signal handling test completed successfully")
-
-def test_teardown_watchdog(output_checker):
-    """Test timeout thread detecting connection abort"""
-    logger = logging.getLogger(__name__)
-    logger.debug("Testing teardown watchdog")
-    cmdline = [ pjoin(basename, 'test', 'test_teardown_watchdog') ]
-    logger.debug(f"Command line: {' '.join(cmdline)}")
-    subprocess.run(cmdline, stdout=output_checker.fd, \
-                   stderr=output_checker.fd, timeout=30, check=True)
-    logger.debug("Teardown watchdog test completed successfully")
 

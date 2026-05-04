@@ -134,8 +134,7 @@ static void* run_fs(void *data) {
     return NULL;
 }
 
-static void test_fs(const char *mountpoint)
-{
+static void test_fs(char *mountpoint) {
     char fname[PATH_MAX];
     int fd;
 

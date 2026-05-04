@@ -72,7 +72,7 @@ static void fork_child(void)
 	/* Add the program name to arg[0] */
 	if (fuse_opt_add_arg(&args, "test_signals")) {
 		fprintf(stderr, "Failed to add argument\n");
-		goto out_free;
+		goto out_free_mountpoint;
 	}
 
 	/* Add debug flag to see more output */
@@ -82,14 +82,14 @@ static void fork_child(void)
 	mountpoint = strdup("/tmp/fuse_test_XXXXXX");
 	if (!mountpoint || !mkdtemp(mountpoint)) {
 		fprintf(stderr, "Failed to create temp dir\n");
-		goto out_free;
+		goto out_free_args;
 	}
 
 	/* Create session */
 	se = fuse_session_new(&args, &test_ll_ops, sizeof(test_ll_ops), NULL);
 	if (!se) {
 		fprintf(stderr, "Failed to create FUSE session\n");
-		goto out_free;
+		goto out_free_mountpoint;
 	}
 
 	/* Mount filesystem */
@@ -155,11 +155,10 @@ out_unmount:
 	fuse_session_unmount(se);
 out_destroy_session:
 	fuse_session_destroy(se);
-out_free:
-	if (mountpoint) {
-		rmdir(mountpoint);
-		free(mountpoint);
-	}
+out_free_mountpoint:
+	rmdir(mountpoint);
+	free(mountpoint);
+out_free_args:
 	fuse_opt_free_args(&args);
 	exit(1);
 }

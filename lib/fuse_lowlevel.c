@@ -19,11 +19,6 @@
 #include "mount_util.h"
 #include "util.h"
 #include "fuse_uring_i.h"
-#include "fuse_daemonize_i.h"
-#include "fuse_daemonize.h"
-#if defined(__linux__)
-#include "mount_i_linux.h"
-#endif
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -33,7 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <sys/eventfd.h>
 #include <stdalign.h>
 #include <string.h>
 #include <unistd.h>
@@ -42,9 +36,7 @@
 #include <assert.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <stdalign.h>
-#include <poll.h>
 
 #ifdef USDT_ENABLED
 #include "usdt.h"
@@ -63,27 +55,6 @@
 struct fuse_pollhandle {
 	uint64_t kh;
 	struct fuse_session *se;
-};
-
-struct fuse_timeout_thread {
-	pthread_t thread_id;
-	struct fuse_session *se;
-
-	/* hard exit timeout in seconds, after /dev/fuse connection loss  */
-	int timeout_sec;
-
-	/* copy of fuse_session->fd */
-	int fuse_session_fd;
-
-	/* eventfd for teardown signaling */
-	int eventfd;
-
-	pthread_mutex_t lock;
-	bool session_destructed;
-
-	/* callback on timeout, if NULL exit(1) is called */
-	fuse_timeout_cb timeout_cb;
-	void *cb_data;
 };
 
 static size_t pagesize;
@@ -260,6 +231,7 @@ static int fuse_write_msg_dev(struct fuse_session *se, struct fuse_chan *ch,
 			     struct iovec *iov, int count)
 {
 	ssize_t res;
+	int err;
 
 	if (se->io != NULL)
 
@@ -273,7 +245,7 @@ static int fuse_write_msg_dev(struct fuse_session *se, struct fuse_chan *ch,
 
 	if (res == -1) {
 		/* ENOENT means the operation was interrupted */
-		int err = errno;
+		err = errno;
 		if (!fuse_session_exited(se) && err != ENOENT)
 			perror("fuse: writing device");
 		return -err;
@@ -1271,7 +1243,7 @@ int fuse_reply_lseek(fuse_req_t req, off_t off)
 }
 
 #ifdef HAVE_STATX
-int fuse_reply_statx(fuse_req_t req, int flags, const struct statx *statx,
+int fuse_reply_statx(fuse_req_t req, int flags, struct statx *statx,
 		     double attr_timeout)
 {
 	struct fuse_statx_out arg;
@@ -1285,7 +1257,7 @@ int fuse_reply_statx(fuse_req_t req, int flags, const struct statx *statx,
 	return send_reply_ok(req, &arg, sizeof(arg));
 }
 #else
-int fuse_reply_statx(fuse_req_t req, int flags, const struct statx *statx,
+int fuse_reply_statx(fuse_req_t req, int flags, struct statx *statx,
 		     double attr_timeout)
 {
 	(void)req;
@@ -1372,8 +1344,8 @@ static void _do_batch_forget(fuse_req_t req, const fuse_ino_t nodeid,
 static void do_batch_forget(fuse_req_t req, const fuse_ino_t nodeid,
 			    const void *inarg)
 {
-	const struct fuse_batch_forget_in *arg = (const void *)inarg;
-	const struct fuse_forget_one *param = (const void *)PARAM(arg);
+	struct fuse_batch_forget_in *arg = (void *)inarg;
+	struct fuse_forget_one *param = (void *)PARAM(arg);
 
 	_do_batch_forget(req, nodeid, inarg, param);
 }
@@ -1381,7 +1353,7 @@ static void do_batch_forget(fuse_req_t req, const fuse_ino_t nodeid,
 static void _do_getattr(fuse_req_t req, const fuse_ino_t nodeid,
 			const void *op_in, const void *in_payload)
 {
-	const struct fuse_getattr_in *arg = (const struct fuse_getattr_in *)op_in;
+	struct fuse_getattr_in *arg = (struct fuse_getattr_in *)op_in;
 	(void)in_payload;
 
 	struct fuse_file_info *fip = NULL;
@@ -1498,7 +1470,7 @@ static void _do_mknod(fuse_req_t req, const fuse_ino_t nodeid,
 static void do_mknod(fuse_req_t req, const fuse_ino_t nodeid, const void *inarg)
 {
 	struct fuse_mknod_in *arg = (struct fuse_mknod_in *)inarg;
-	const char *name = PARAM(arg);
+	char *name = PARAM(arg);
 
 	if (req->se->conn.proto_minor < 12)
 		name = (char *)inarg + FUSE_COMPAT_MKNOD_IN_SIZE;
@@ -1651,7 +1623,7 @@ static void _do_tmpfile(fuse_req_t req, fuse_ino_t nodeid, const void *op_in,
 
 static void do_tmpfile(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 {
-	const struct fuse_create_in *arg = (const struct fuse_create_in *) inarg;
+	struct fuse_create_in *arg = (struct fuse_create_in *) inarg;
 
 	_do_tmpfile(req, nodeid, arg, NULL);
 }
@@ -1659,7 +1631,7 @@ static void do_tmpfile(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 static void _do_link(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		     const void *in_payload)
 {
-	const struct fuse_link_in *arg = (const struct fuse_link_in *)op_in;
+	struct fuse_link_in *arg = (struct fuse_link_in *)op_in;
 
 	if (req->se->op.link)
 		req->se->op.link(req, arg->oldnodeid, nodeid, in_payload);
@@ -1702,7 +1674,7 @@ static void do_create(fuse_req_t req, const fuse_ino_t nodeid,
 		      const void *inarg)
 {
 	const struct fuse_create_in *arg = (struct fuse_create_in *)inarg;
-	const void *payload = PARAM(arg);
+	void *payload = PARAM(arg);
 
 	if (req->se->conn.proto_minor < 12)
 		payload = (char *)inarg + sizeof(struct fuse_open_in);
@@ -1714,7 +1686,7 @@ static void _do_open(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		     const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_open_in *arg = (const struct fuse_open_in *)op_in;
+	struct fuse_open_in *arg = (struct fuse_open_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -1857,7 +1829,7 @@ static void _do_flush(fuse_req_t req, const fuse_ino_t nodeid,
 		      const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_flush_in *arg = (const struct fuse_flush_in *)op_in;
+	struct fuse_flush_in *arg = (struct fuse_flush_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -1959,7 +1931,7 @@ static void _do_readdir(fuse_req_t req, const fuse_ino_t nodeid,
 			const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_read_in *arg = (const struct fuse_read_in *)op_in;
+	struct fuse_read_in *arg = (struct fuse_read_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -1981,7 +1953,7 @@ static void _do_readdirplus(fuse_req_t req, const fuse_ino_t nodeid,
 			    const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_read_in *arg = (const struct fuse_read_in *)op_in;
+	struct fuse_read_in *arg = (struct fuse_read_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -2003,7 +1975,7 @@ static void _do_releasedir(fuse_req_t req, const fuse_ino_t nodeid,
 			   const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_release_in *arg = (const struct fuse_release_in *)op_in;
+	struct fuse_release_in *arg = (struct fuse_release_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -2026,7 +1998,7 @@ static void _do_fsyncdir(fuse_req_t req, const fuse_ino_t nodeid,
 			 const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_fsync_in *arg = (const struct fuse_fsync_in *)op_in;
+	struct fuse_fsync_in *arg = (struct fuse_fsync_in *)op_in;
 	struct fuse_file_info fi;
 	int datasync = arg->fsync_flags & 1;
 
@@ -2088,7 +2060,7 @@ static void do_setxattr(fuse_req_t req, const fuse_ino_t nodeid,
 	struct fuse_session *se = req->se;
 	unsigned int xattr_ext = !!(se->conn.want & FUSE_CAP_SETXATTR_EXT);
 	const struct fuse_setxattr_in *arg = inarg;
-	const char *payload = xattr_ext ? PARAM(arg) :
+	char *payload = xattr_ext ? PARAM(arg) :
 				    (char *)arg + FUSE_COMPAT_SETXATTR_IN_SIZE;
 
 	_do_setxattr(req, nodeid, arg, payload);
@@ -2248,7 +2220,7 @@ static void do_setlkw(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 	_do_setlkw(req, nodeid, inarg, NULL);
 }
 
-static int find_interrupted(struct fuse_session *se, const struct fuse_req *req)
+static int find_interrupted(struct fuse_session *se, struct fuse_req *req)
 {
 	struct fuse_req *curr;
 
@@ -2389,7 +2361,7 @@ static void _do_ioctl(fuse_req_t req, const fuse_ino_t nodeid,
 static void do_ioctl(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 {
 	const struct fuse_ioctl_in *arg = inarg;
-	const void *in_buf = arg->in_size ? PARAM(arg) : NULL;
+	void *in_buf = arg->in_size ? PARAM(arg) : NULL;
 
 	_do_ioctl(req, nodeid, arg, in_buf);
 }
@@ -2403,7 +2375,7 @@ static void _do_poll(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		     const void *in_payload)
 {
 	(void)in_payload;
-	const struct fuse_poll_in *arg = (const struct fuse_poll_in *)op_in;
+	struct fuse_poll_in *arg = (struct fuse_poll_in *)op_in;
 	struct fuse_file_info fi;
 
 	memset(&fi, 0, sizeof(fi));
@@ -2566,33 +2538,15 @@ static void _do_statx(fuse_req_t req, const fuse_ino_t nodeid,
 		      const void *op_in, const void *in_payload)
 {
 	(void)in_payload;
+	(void)req;
 	(void)nodeid;
 	(void)op_in;
-	fuse_reply_err(req, ENOSYS);
 }
 #endif
 
 static void do_statx(fuse_req_t req, fuse_ino_t nodeid, const void *inarg)
 {
 	_do_statx(req, nodeid, inarg, NULL);
-}
-
-static void _do_syncfs(fuse_req_t req, const fuse_ino_t nodeid,
-				const void *op_in, const void *in_payload)
-{
-	(void)op_in;
-	(void)in_payload;
-
-	if (req->se->op.syncfs)
-		req->se->op.syncfs(req, nodeid);
-	else
-		fuse_reply_err(req, ENOSYS);
-}
-
-static void do_syncfs(fuse_req_t req, const fuse_ino_t nodeid,
-			const void *inarg)
-{
-	_do_syncfs(req, nodeid, inarg, NULL);
 }
 
 static bool want_flags_valid(uint64_t capable, uint64_t want)
@@ -2673,10 +2627,10 @@ void fuse_unset_feature_flag(struct fuse_conn_info *conn,
 	se->conn_want &= ~flag;
 }
 
-bool fuse_get_feature_flag(const struct fuse_conn_info *conn,
+bool fuse_get_feature_flag(struct fuse_conn_info *conn,
 					     uint64_t flag)
 {
-	return (conn->capable_ext & flag) ? true : false;
+	return conn->capable_ext & flag ? true : false;
 }
 
 /* Prevent bogus data races (bogus since "init" is called before
@@ -2792,8 +2746,6 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 			se->conn.capable_ext |= FUSE_CAP_NO_EXPORT_SUPPORT;
 		if (inargflags & FUSE_OVER_IO_URING)
 			se->conn.capable_ext |= FUSE_CAP_OVER_IO_URING;
-		if (inargflags & FUSE_ALLOW_IDMAP)
-			se->conn.capable_ext |= FUSE_CAP_ALLOW_IDMAP;
 
 	} else {
 		se->conn.max_readahead = 0;
@@ -2952,8 +2904,6 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		outargflags |= FUSE_OVER_IO_URING;
 		enable_io_uring = true;
 	}
-	if (se->conn.want_ext & FUSE_CAP_ALLOW_IDMAP)
-		outargflags |= FUSE_ALLOW_IDMAP;
 
 	if ((inargflags & FUSE_REQUEST_TIMEOUT) && se->conn.request_timeout) {
 		outargflags |= FUSE_REQUEST_TIMEOUT;
@@ -3025,18 +2975,9 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 	 * over the thread scheduling.
 	 */
 	se->got_init = 1;
-	fuse_daemonize_set_got_init();
 	send_reply_ok(req, &outarg, outargsize);
 	if (enable_io_uring)
 		fuse_uring_wake_ring_threads(se);
-
-	/*
-	 * With sync init the daemon needs to signal success after the mount
-	 * itself. Otherwise parent process might exit with success, but the
-	 *  mount point might not there yet.
-	 */
-	if (!se->is_sync_init)
-		fuse_daemonize_early_success();
 }
 
 static __attribute__((no_sanitize("thread"))) void
@@ -3049,16 +2990,14 @@ static void _do_destroy(fuse_req_t req, const fuse_ino_t nodeid,
 			const void *op_in, const void *in_payload)
 {
 	struct fuse_session *se = req->se;
+	char *mountpoint;
 
 	(void) nodeid;
 	(void)op_in;
 	(void)in_payload;
 
-	{
-		char *mountpoint = atomic_exchange(&se->mountpoint, NULL);
-
-		free(mountpoint);
-	}
+	mountpoint = atomic_exchange(&se->mountpoint, NULL);
+	free(mountpoint);
 
 	se->got_destroy = 1;
 	se->got_init = 0;
@@ -3404,30 +3343,6 @@ int fuse_lowlevel_notify_retrieve(struct fuse_session *se, fuse_ino_t ino,
 	return err;
 }
 
-int fuse_lowlevel_notify_prune(struct fuse_session *se,
-			       fuse_ino_t *nodeids, uint32_t count)
-{
-	struct fuse_notify_prune_out outarg;
-	struct iovec iov[3];
-
-	if (!se)
-		return -EINVAL;
-
-	if (se->conn.proto_minor < 45)
-		return -ENOSYS;
-
-	outarg.count = count;
-	outarg.padding = 0;
-	outarg.spare = 0;
-
-	iov[1].iov_base = &outarg;
-	iov[1].iov_len = sizeof(outarg);
-	iov[2].iov_base = (void *)nodeids;
-	iov[2].iov_len = sizeof(fuse_ino_t) * count;
-
-	return send_notify_iov(se, FUSE_NOTIFY_PRUNE, iov, 3);
-}
-
 void *fuse_req_userdata(fuse_req_t req)
 {
 	return req->se->userdata;
@@ -3530,7 +3445,6 @@ static struct {
 	[FUSE_COPY_FILE_RANGE] = { do_copy_file_range, "COPY_FILE_RANGE" },
 	[FUSE_COPY_FILE_RANGE_64] = { do_copy_file_range_64, "COPY_FILE_RANGE_64" },
 	[FUSE_LSEEK]	   = { do_lseek,       "LSEEK"	     },
-	[FUSE_SYNCFS]	   = { do_syncfs,      "SYNCFS"      },
 	[FUSE_STATX]	   = { do_statx,       "STATX"	     },
 	[CUSE_INIT]	   = { cuse_lowlevel_init, "CUSE_INIT"   },
 };
@@ -3587,7 +3501,6 @@ static struct {
 	[FUSE_COPY_FILE_RANGE]	= { _do_copy_file_range, "COPY_FILE_RANGE" },
 	[FUSE_COPY_FILE_RANGE_64]	= { _do_copy_file_range_64, "COPY_FILE_RANGE_64" },
 	[FUSE_LSEEK]		= { _do_lseek,		"LSEEK" },
-	[FUSE_SYNCFS]		= { _do_syncfs,		"SYNCFS" },
 	[FUSE_STATX]		= { _do_statx,		"STATX" },
 	[CUSE_INIT]		= { _cuse_lowlevel_init, "CUSE_INIT" },
 };
@@ -3622,7 +3535,7 @@ fuse_req_opcode_sanity_ok(struct fuse_session *se, enum fuse_opcode in_op)
 }
 
 static inline void
-fuse_session_in2req(struct fuse_req *req, const struct fuse_in_header *in)
+fuse_session_in2req(struct fuse_req *req, struct fuse_in_header *in)
 {
 	req->unique = in->unique;
 	req->ctx.uid = in->uid;
@@ -3634,7 +3547,7 @@ fuse_session_in2req(struct fuse_req *req, const struct fuse_in_header *in)
  * Implement -o allow_root
  */
 static inline int
-fuse_req_check_allow_root(const struct fuse_session *se, enum fuse_opcode in_op,
+fuse_req_check_allow_root(struct fuse_session *se, enum fuse_opcode in_op,
 			  uid_t in_uid)
 {
 	int err = EACCES;
@@ -3919,15 +3832,6 @@ void fuse_session_destroy(struct fuse_session *se)
 	if (se->io != NULL)
 		free(se->io);
 	destroy_mount_opts(se->mo);
-
-	if (se->timeout_thread) {
-		pthread_mutex_lock(&se->timeout_thread->lock);
-		se->timeout_thread->session_destructed = true;
-		se->timeout_thread->fuse_session_fd = -1;
-		se->timeout_thread->se = NULL;
-		pthread_mutex_unlock(&se->timeout_thread->lock);
-	}
-
 	free(se);
 }
 
@@ -4011,15 +3915,12 @@ pipe_retry:
 				res = grow_pipe_to_max(llp->pipe[0]);
 				if (res > 0)
 					llp->size = res;
-				fuse_ll_clear_pipe(se);
 				goto fallback;
 			}
 			llp->size = res;
 		}
-		if (llp->size < bufsize) {
-			fuse_ll_clear_pipe(se);
+		if (llp->size < bufsize)
 			goto fallback;
-		}
 	}
 
 	if (se->io != NULL && se->io->splice_receive != NULL) {
@@ -4212,7 +4113,7 @@ int fuse_session_receive_buf_internal(struct fuse_session *se,
 struct fuse_session *
 fuse_session_new_versioned(struct fuse_args *args,
 			   const struct fuse_lowlevel_ops *op, size_t op_size,
-			   const struct libfuse_version *version, void *userdata)
+			   struct libfuse_version *version, void *userdata)
 {
 	int err;
 	struct fuse_session *se;
@@ -4245,7 +4146,6 @@ fuse_session_new_versioned(struct fuse_args *args,
 		goto out1;
 	}
 	se->fd = -1;
-	se->init_wakeup_fd = -1;
 	se->conn.max_write = FUSE_DEFAULT_MAX_PAGES_LIMIT * getpagesize();
 	se->bufsize = se->conn.max_write + FUSE_BUFFER_HEADER_SIZE;
 	se->conn.max_readahead = UINT_MAX;
@@ -4417,317 +4317,6 @@ int fuse_session_custom_io_30(struct fuse_session *se,
 			offsetof(struct fuse_custom_io, clone_fd), fd);
 }
 
-#if defined(HAVE_NEW_MOUNT_API)
-
-/* Worker thread for synchronous FUSE_INIT */
-static void *session_sync_init_worker(void *data)
-{
-	struct fuse_session *se = (struct fuse_session *)data;
-	struct fuse_buf fbuf = {
-		.mem = NULL,
-	};
-	struct pollfd pfds[2];
-
-	pfds[0].fd = se->fd;
-	pfds[0].events = POLLIN;
-	pfds[0].revents = 0;
-	pfds[1].fd = se->init_wakeup_fd;
-	pfds[1].events = POLLIN;
-	pfds[1].revents = 0;
-
-	/*
-	 * Process requests until mount completes. With SELinux there may be
-	 * additional requests (like getattr) after FUSE_INIT before mount
-	 * returns.
-	 */
-	while (true) {
-		int res = poll(pfds, 2, -1);
-
-		if (res == -1) {
-			if (errno == EINTR)
-				continue;
-			se->init_error = -errno;
-			break;
-		}
-
-		if (pfds[1].revents & POLLIN)
-			break;
-
-		if (pfds[0].revents & POLLIN) {
-			res = fuse_session_receive_buf_internal(se, &fbuf, NULL);
-			if (res == -EINTR)
-				continue;
-			if (res <= 0) {
-				se->init_error = res < 0 ? res : -EINVAL;
-				break;
-			}
-
-			fuse_session_process_buf_internal(se, &fbuf, NULL);
-		}
-	}
-
-	fuse_buf_free(&fbuf);
-	return NULL;
-}
-
-/* Enable synchronous FUSE_INIT and start worker thread */
-static int session_start_sync_init(struct fuse_session *se, int fd)
-{
-	int err, res;
-
-	if (!se->want_sync_init &&
-		(se->uring.enable && !fuse_daemonize_is_used())) {
-		if (se->debug)
-			fuse_log(FUSE_LOG_DEBUG,
-					"fuse: sync init not enabled\n");
-		return 0;
-	}
-
-	/* Try to enable synchronous FUSE_INIT */
-	res = ioctl(fd, FUSE_DEV_IOC_SYNC_INIT);
-	if (res) {
-		err = -errno;
-		if (err != ENOTTY) {
-			fuse_log(
-				FUSE_LOG_ERR,
-				"fuse: failed to enable sync init: %s\n",
-				strerror(errno));
-		} else {
-			/*
-			 * ENOTTY means kernel doesn't support sync init,not an
-			 * error
-			 */
-			if (se->debug)
-				fuse_log(
-					FUSE_LOG_DEBUG,
-					"fuse: kernel doesn't support sync init\n");
-			err = 0;
-		}
-		return err;
-	}
-
-	if (se->debug)
-		fuse_log(FUSE_LOG_DEBUG,
-				"fuse: synchronous FUSE_INIT enabled\n");
-
-	se->init_error = 0;
-
-	se->init_wakeup_fd = eventfd(0, EFD_CLOEXEC);
-	if (se->init_wakeup_fd == -1) {
-		fuse_log(
-			FUSE_LOG_ERR,
-			"fuse: failed to create eventfd for init worker: %s\n",
-			strerror(errno));
-		return -EIO;
-	}
-
-	err = pthread_create(&se->init_thread, NULL,
-				session_sync_init_worker, se);
-	if (err != 0) {
-		fuse_log(
-			FUSE_LOG_ERR,
-			"fuse: failed to create init worker thread: %s\n",
-			strerror(err));
-		close(se->init_wakeup_fd);
-		se->init_wakeup_fd = -1;
-		return -EIO;
-	}
-
-	return 0;
-}
-
-/* Wait for synchronous FUSE_INIT to complete */
-static int session_wait_sync_init_completion(struct fuse_session *se)
-{
-	void *retval;
-	int err;
-	uint64_t val = 1;
-
-	if (se->init_wakeup_fd == -1)
-		return 0;
-
-	if (se->init_wakeup_fd != -1) {
-		ssize_t res = write(se->init_wakeup_fd, &val, sizeof(val));
-
-		if (res != sizeof(val)) {
-			fuse_log(FUSE_LOG_ERR,
-				 "fuse: failed to signal init worker: %s\n",
-				 strerror(errno));
-		}
-	}
-
-	err = pthread_join(se->init_thread, &retval);
-	if (err != 0) {
-		fuse_log(FUSE_LOG_ERR, "fuse: failed to join init worker thread: %s\n",
-			 strerror(err));
-		return -1;
-	}
-
-	if (se->init_wakeup_fd != -1) {
-		close(se->init_wakeup_fd);
-		se->init_wakeup_fd = -1;
-	}
-
-	se->init_thread = 0;
-
-	if (se->init_error != 0) {
-		fuse_log(FUSE_LOG_ERR, "fuse: init worker failed: %s\n",
-			 strerror(-se->init_error));
-		return -1;
-	}
-
-	if (fuse_session_exited(se)) {
-		fuse_log(FUSE_LOG_ERR, "FUSE_INIT failed: session exited\n");
-		return -1;
-	}
-
-	return 0;
-}
-
-/*
- * Handle fallback to fusermount3 when privileged mount fails with EPERM.
- * Returns: new fd on success, negative error code on failure
- */
-static int new_api_fusermount(struct fuse_session *se,
-			      const char *mountpoint,
-			      const char *mnt_opts,
-			      int *sock_fd, pid_t *fusermount_pid)
-{
-	int fd, err;
-
-	if (se->debug)
-		fuse_log(FUSE_LOG_DEBUG,
-			 "fuse: privileged mount failed with EPERM, falling back to fusermount3\n");
-
-	/* Terminate worker thread with wrong fd */
-	if (session_wait_sync_init_completion(se) < 0)
-		fuse_log(FUSE_LOG_ERR, "fuse: sync init completion failed\n");
-
-	/* Call fusermount3 with --sync-init */
-	fd = mount_fusermount_obtain_fd(mountpoint, se->mo, mnt_opts, sock_fd,
-					fusermount_pid);
-	if (fd < 0) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: fusermount3 sync-init failed\n");
-		return -ENOTSUP;
-	}
-
-	/* Start worker thread with correct fd from fusermount3 */
-	se->fd = fd;
-	err = session_start_sync_init(se, fd);
-	if (err) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: failed to start sync init worker\n");
-		return err;
-	}
-
-	/* Send proceed signal and wait for mount result */
-	err = fuse_fusermount_proceed_mnt(*sock_fd);
-	if (err < 0)
-		return -EIO;
-
-	return fd;
-}
-
-/*
- * Mount using the new Linux mount API (fsopen/fsconfig/fsmount/move_mount)
- * Sync-init is only supported with the new API, as the mount might hang
- * in case of daemon crash during FUSE_INIT. That also means once the sync init
- * ioctl succeed fallback is not allowed anymore.
- * Returns: fd on success, -1 on failure
- */
-static int fuse_session_mount_new_api(struct fuse_session *se,
-				      const char *mountpoint)
-{
-	int fd = -1;
-	int sock_fd = -1;
-	pid_t fusermount_pid = -1;
-	int res, err;
-	char *mnt_opts = NULL;
-	char *mnt_opts_with_fd = NULL;
-	char fd_opt[32];
-
-	res = fuse_kern_mount_get_base_mnt_opts(se->mo, &mnt_opts);
-	err = -EIO;
-	if (res == -1) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: failed to get base mount options\n");
-		goto err;
-	}
-
-	fd = fuse_kern_mount_prepare(mountpoint, se->mo);
-	if (fd == -1) {
-		fuse_log(FUSE_LOG_ERR, "Mount preparation failed.\n");
-		goto err;
-	}
-
-	se->fd = fd;
-	err = session_start_sync_init(se, fd);
-	if (err)
-		goto err;
-
-	snprintf(fd_opt, sizeof(fd_opt), "fd=%i", fd);
-	err = -ENOMEM;
-	if (fuse_opt_add_opt(&mnt_opts_with_fd, mnt_opts) == -1 ||
-	    fuse_opt_add_opt(&mnt_opts_with_fd, fd_opt) == -1) {
-		goto err;
-	}
-
-	/* Try to mount directly */
-	err = fuse_kern_fsmount_mo(mountpoint, se->mo, mnt_opts_with_fd);
-
-	/* If mount failed with EPERM, fall back to fusermount3 with sync-init */
-	if (err < 0 && errno == EPERM) {
-		close(fd);
-		se->fd = -1;
-		fd = new_api_fusermount(se, mountpoint, mnt_opts,
-					&sock_fd, &fusermount_pid);
-		if (fd < 0) {
-			err = fd;
-			goto err_with_sock;
-		}
-		err = 0;
-	} else if (err < 0) {
-		/* Mount failed with non-EPERM error, bail out */
-		goto err;
-	}
-
-err_with_sock:
-	if (sock_fd >= 0) {
-		close(sock_fd);
-		/* Reap fusermount3 child process to prevent zombie */
-		if (fusermount_pid > 0)
-			waitpid(fusermount_pid, NULL, 0);
-	}
-err:
-	if (err < 0) {
-		/* Close fd first to unblock worker thread */
-		if (fd >= 0)
-			close(fd);
-		fd = -1;
-		se->fd = -1;
-		se->error = err;
-	}
-	/* Wait for synchronous FUSE_INIT to complete */
-	if (session_wait_sync_init_completion(se) < 0)
-		fuse_log(FUSE_LOG_ERR, "fuse: sync init completion failed\n");
-
-	se->is_sync_init = true;
-	free(mnt_opts);
-	free(mnt_opts_with_fd);
-	return fd;
-}
-#else
-static int fuse_session_mount_new_api(struct fuse_session *se,
-				      const char *mountpoint)
-{
-	(void)se;
-	(void)mountpoint;
-
-	return -1;
-}
-#endif
-
 int fuse_session_mount(struct fuse_session *se, const char *_mountpoint)
 {
 	int fd;
@@ -4755,8 +4344,6 @@ int fuse_session_mount(struct fuse_session *se, const char *_mountpoint)
 			close(fd);
 	} while (fd >= 0 && fd <= 2);
 
-	/* Open channel */
-
 	/*
 	 * To allow FUSE daemons to run without privileges, the caller may open
 	 * /dev/fuse before launching the file system and pass on the file
@@ -4771,25 +4358,18 @@ int fuse_session_mount(struct fuse_session *se, const char *_mountpoint)
 				fd);
 			goto error_out;
 		}
-		goto out;
+		se->fd = fd;
+		return 0;
 	}
 
-	/* new linux mount api (and sync init) */
-	fd = fuse_session_mount_new_api(se, mountpoint);
-
-	/* fall back to old API, possible as long as another fd is used */
-	if (fd < 0) {
-		se->error = 0; /* reset error of new api */
-		fd = fuse_kern_mount(mountpoint, se->mo);
-		if (fd < 0)
-			goto error_out;
-	}
-
-out:
+	/* Open channel */
+	fd = fuse_kern_mount(mountpoint, se->mo);
+	if (fd == -1)
+		goto error_out;
 	se->fd = fd;
-	se->mountpoint = mountpoint;
 
-	fuse_daemonize_early_set_mounted();
+	/* Save mountpoint */
+	se->mountpoint = mountpoint;
 
 	return 0;
 
@@ -4798,7 +4378,7 @@ error_out:
 	return -1;
 }
 
-int fuse_session_fd(const struct fuse_session *se)
+int fuse_session_fd(struct fuse_session *se)
 {
 	return se->fd;
 }
@@ -4908,208 +4488,4 @@ int fuse_session_exited(struct fuse_session *se)
 		atomic_load_explicit(&se->mt_exited, memory_order_relaxed);
 
 	return exited ? 1 : 0;
-}
-
-static void fuse_tt_destruct(struct fuse_timeout_thread *tt)
-{
-	if (tt->eventfd != -1)
-		close(tt->eventfd);
-	pthread_mutex_destroy(&tt->lock);
-	free(tt);
-}
-
-static void fuse_tt_pollerr_handler(struct fuse_timeout_thread *tt)
-{
-	pthread_mutex_lock(&tt->lock);
-	if (!tt->session_destructed) {
-		/* fuse connection lost, signal session */
-		fuse_session_exit(tt->se);
-	}
-	tt->fuse_session_fd = -1;
-	pthread_mutex_unlock(&tt->lock);
-}
-
-/*
- * Time out thread, polls on the session fd for POLLERR and exits the session.
- * If not stopped after POLLERR is detected, the thread will exit the entire
- * process after the specified timeout.
- */
-static void *fuse_session_teardown_watchdog(void *arg)
-{
-	struct fuse_timeout_thread *tt = (struct fuse_timeout_thread *)arg;
-	struct pollfd pfds[3];
-	int res;
-	int poll_timeout = -1; /* infinity poll */
-	int nfds;
-	int session_fd_idx;
-	int eventfd_idx;
-
-restart:
-	session_fd_idx = -1;
-	nfds = 0;
-	if (tt->fuse_session_fd >= 0) {
-		/* Poll on session fd for POLLERR */
-		pfds[nfds].fd = tt->fuse_session_fd;
-		pfds[nfds].events = 0;
-		session_fd_idx = nfds;
-		nfds++;
-	}
-
-	/* Poll on eventfd for teardown signal */
-	pfds[nfds].fd = tt->eventfd;
-	pfds[nfds].events = POLLIN;
-	eventfd_idx = nfds;
-	nfds++;
-
-	while (true) {
-		res = poll(pfds, nfds, poll_timeout);
-
-		if (res == -1) {
-			if (errno == EINTR)
-				continue;
-			break;
-		} else if (res > 0) {
-			/* Check for POLLERR on session fd */
-			if (session_fd_idx >= 0 &&
-			    pfds[session_fd_idx].revents & (POLLERR | POLLNVAL)) {
-				fuse_tt_pollerr_handler(tt);
-
-				/* Timeout for hard exit */
-				poll_timeout = tt->timeout_sec * 1000;
-				goto restart;
-			}
-
-			/* Check for teardown signal on eventfd */
-			if (pfds[eventfd_idx].revents & POLLIN) {
-				/* Teardown requested, exit thread */
-				break;
-			}
-		}
-
-		if (unlikely(poll_timeout == -1)) {
-			fuse_log(
-				FUSE_LOG_ERR,
-				"FUSE teardown watchdog Unhandled poll result session fd: %d eventfd: %d.\n"
-				"Terminating the watchdog.\n",
-				session_fd_idx >= 0 ?
-					pfds[session_fd_idx].revents :
-					-1,
-				pfds[eventfd_idx].revents);
-			break;
-		}
-
-		/*
-		 * Timeout means the kernel connection was aborted and poll
-		 * timed out. I.e. the process didn't stop.
-		 */
-		if (tt->timeout_cb)
-			tt->timeout_cb(tt->cb_data);
-		else
-			exit(1);
-		break;
-	}
-
-	return NULL;
-}
-
-void *fuse_session_start_teardown_watchdog(struct fuse_session *se,
-					   int timeout_sec, fuse_timeout_cb cb,
-					   void *cb_data)
-{
-	struct fuse_timeout_thread *tt;
-	int res;
-
-	if (timeout_sec <= 0) {
-		fuse_log(FUSE_LOG_ERR, "fuse: invalid timeout value\n");
-		return NULL;
-	}
-
-	if (se->fd == -1) {
-		fuse_log(FUSE_LOG_ERR, "fuse: invalid session fd\n");
-		return NULL;
-	}
-
-	tt = malloc(sizeof(struct fuse_timeout_thread));
-	if (!tt) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: failed to allocate timeout thread structure\n");
-		return NULL;
-	}
-
-	tt->se = se;
-	tt->fuse_session_fd = se->fd;
-	tt->timeout_sec = timeout_sec;
-	tt->timeout_cb = cb;
-	tt->cb_data = cb_data;
-	tt->eventfd = -1;
-	pthread_mutex_init(&tt->lock, NULL);
-	tt->session_destructed = false;
-	if (se->timeout_thread) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: timeout thread already running\n");
-		goto err;
-	}
-	se->timeout_thread = tt;
-
-	/* Create eventfd for teardown signaling */
-	tt->eventfd = eventfd(0, EFD_CLOEXEC);
-	if (tt->eventfd == -1) {
-		fuse_log(FUSE_LOG_ERR, "fuse: failed to create eventfd: %s\n",
-			 strerror(errno));
-		goto err;
-	}
-
-	res = pthread_create(&tt->thread_id, NULL,
-			     fuse_session_teardown_watchdog, tt);
-	if (res != 0) {
-		fuse_log(FUSE_LOG_ERR,
-			 "fuse: failed to create timeout thread: %s\n",
-			 strerror(res));
-		goto err;
-	}
-
-	return tt;
-
-err:
-	fuse_tt_destruct(tt);
-	return NULL;
-}
-
-void fuse_session_stop_teardown_watchdog(void *data)
-{
-	struct fuse_timeout_thread *tt;
-	uint64_t val = 1;
-
-	if (data == NULL)
-		return;
-	tt = (struct fuse_timeout_thread *)data;
-
-	/* Signal the eventfd to wake up the thread */
-	if (write(tt->eventfd, &val, sizeof(val)) == -1) {
-		fuse_log(FUSE_LOG_ERR, "fuse: failed to signal eventfd: %s\n",
-			 strerror(errno));
-	}
-
-	/* Wait for thread to finish */
-	pthread_join(tt->thread_id, NULL);
-	fuse_tt_destruct(tt);
-}
-
-void fuse_session_want_sync_init(struct fuse_session *se)
-{
-	if (se == NULL)
-		return;
-	se->want_sync_init = true;
-}
-
-void fuse_session_set_debug(struct fuse_session *se)
-{
-	se->debug = 1;
-}
-
-bool fuse_conn_is_sync_init(const struct fuse_conn_info *conn)
-{
-	const struct fuse_session *se = container_of(conn, struct fuse_session, conn);
-
-	return se->is_sync_init;
 }

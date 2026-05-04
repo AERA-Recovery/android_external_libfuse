@@ -251,7 +251,7 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
 
     if not cache:
         cmdline.append('--nocache')
-
+        
     mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
                                      stderr=output_checker.fd)
     try:
@@ -306,7 +306,7 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
     else:
         umount(mount_process, mnt_dir)
 
-
+        
 @pytest.mark.skipif(fuse_proto < (7,11),
                     reason='not supported by running kernel')
 def test_ioctl(tmpdir, output_checker):
@@ -318,7 +318,7 @@ def test_ioctl(tmpdir, output_checker):
     file_output = subprocess.check_output(['file', progname]).decode()
     if 'ELF 32-bit' in file_output and platform.machine() == 'x86_64':
         pytest.skip('ioctl test not supported for 32-bit binary on 64-bit system')
-
+    
     mnt_dir = str(tmpdir)
     testfile = pjoin(mnt_dir, 'fioc')
     cmdline = base_cmdline + [progname, '-f', mnt_dir ]
@@ -337,56 +337,6 @@ def test_ioctl(tmpdir, output_checker):
         subprocess.check_call(cmdline + [ '3' ])
         with open(testfile, 'rb') as fh:
             assert fh.read()== b'foo'
-    except:
-        cleanup(mount_process, mnt_dir)
-        raise
-    else:
-        umount(mount_process, mnt_dir)
-
-@pytest.mark.skipif(fuse_proto < (7,11),
-                    reason='not supported by running kernel')
-def test_ioctl_ll(tmpdir, output_checker):
-    progname = pjoin(basename, 'example', 'ioctl_ll')
-    if not os.path.exists(progname):
-        pytest.skip('%s not built' % os.path.basename(progname))
-
-    # Check if binary is 32-bit
-    file_output = subprocess.check_output(['file', progname]).decode()
-    if 'ELF 32-bit' in file_output and platform.machine() == 'x86_64':
-        pytest.skip('ioctl_ll test not supported for 32-bit binary on 64-bit system')
-
-    mnt_dir = str(tmpdir)
-    testfile = pjoin(mnt_dir, 'fioc')
-    cmdline = base_cmdline + [progname, '-f', mnt_dir]
-    mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
-                                     stderr=output_checker.fd)
-    try:
-        wait_for_mount(mount_process, mnt_dir)
-
-        client = pjoin(basename, 'example', 'ioctl_ll_client')
-
-        # Test restricted ioctls: get_size (should be 0 initially)
-        cmdline = base_cmdline + [client, 'get_size', testfile]
-        assert subprocess.check_output(cmdline) == b'0\n'
-
-        # Write some data via regular file I/O
-        with open(testfile, 'wb') as fh:
-            fh.write(b'foobar')
-
-        # Test restricted ioctls: get_size (should be 6 now)
-        cmdline = base_cmdline + [client, 'get_size', testfile]
-        assert subprocess.check_output(cmdline) == b'6\n'
-
-        # Test restricted ioctls: set_size
-        cmdline = base_cmdline + [client, 'set_size', testfile, '3']
-        subprocess.check_call(cmdline)
-
-        # Verify size changed
-        with open(testfile, 'rb') as fh:
-            assert fh.read() == b'foo'
-
-        # Note: Unrestricted ioctls (FIOC_READ, FIOC_WRITE) only work with CUSE,
-        # not regular FUSE mounts. They are tested via test_cuse instead.
     except:
         cleanup(mount_process, mnt_dir)
         raise
@@ -414,7 +364,7 @@ def test_null(tmpdir, output_checker):
     progname = pjoin(basename, 'example', 'null')
     if not os.path.exists(progname):
         pytest.skip('%s not built' % os.path.basename(progname))
-
+    
     mnt_file = str(tmpdir) + '/file'
     with open(mnt_file, 'w') as fh:
         fh.write('dummy')
@@ -476,36 +426,6 @@ def test_notify_inval_entry(tmpdir, only_expire, notify, output_checker):
             safe_sleep(5)
         with pytest.raises(FileNotFoundError):
             os.stat(fname)
-    except:
-        cleanup(mount_process, mnt_dir)
-        raise
-    else:
-        umount(mount_process, mnt_dir)
-
-@pytest.mark.skipif(fuse_proto < (7,45),
-                    reason='not supported by running kernel')
-@pytest.mark.parametrize("notify", (True, False))
-def test_notify_prune(tmpdir, notify, output_checker):
-    mnt_dir = str(tmpdir)
-    cmdline = base_cmdline + \
-              [ pjoin(basename, 'example', 'notify_prune'),
-                '-f', '--update-interval=1', mnt_dir ]
-    if not notify:
-        cmdline.append('--no-notify')
-    mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
-                                     stderr=output_checker.fd)
-    try:
-        wait_for_mount(mount_process, mnt_dir)
-        fname = pjoin(mnt_dir, os.listdir(mnt_dir)[0])
-        with open(fname, 'r') as fh:
-            content = fh.read()
-
-        safe_sleep(2)
-        with open(fname, 'r') as fh:
-            if notify:
-                assert content != fh.read()
-            else:
-                assert content == fh.read()
     except:
         cleanup(mount_process, mnt_dir)
         raise
@@ -638,7 +558,7 @@ def test_release_unlink_race(tmpdir, output_checker):
         safe_sleep(3)
 
         assert os.listdir(temp_dir_path) == []
-
+    
     except:
         temp_dir.cleanup()
         cleanup(fuse_process, fuse_mountpoint)
@@ -786,10 +706,10 @@ def tst_seek(src_dir, mnt_dir):
     with os_open(fullname, os.O_WRONLY) as fd:
         os.lseek(fd, 4, os.SEEK_SET)
         os.write(fd, b'com')
-
+        
     with open(fullname, 'rb') as fh:
         assert fh.read() == b'\0foocom\n'
-
+        
 def tst_open_unlink(mnt_dir):
     name = pjoin(mnt_dir, name_generator())
     data1 = b'foo'
@@ -1054,75 +974,6 @@ def tst_xattr(path):
     os.setxattr(path, b'hello_ll_setxattr_name', b'hello_ll_setxattr_value')
     assert os.getxattr(path, b'hello_ll_getxattr_name') == b'hello_ll_getxattr_value'
     os.removexattr(path, b'hello_ll_removexattr_name')
-
-
-def test_printcap_has_all_fuse_caps():
-    """Verify that printcap.c includes all FUSE_CAP_* flags from fuse_common.h"""
-
-    # Find the source root directory
-    test_dir = os.path.dirname(os.path.abspath(__file__))
-    build_root = os.path.dirname(test_dir)
-    src_root = None
-
-    # Try to read meson-info.json to find source directory (for out-of-tree builds)
-    meson_info = pjoin(build_root, 'meson-info', 'meson-info.json')
-    if os.path.exists(meson_info):
-        import json
-        with open(meson_info, 'r') as f:
-            info = json.load(f)
-            src_root = info.get('directories', {}).get('source')
-
-    # If meson-info not found, walk up the directory tree
-    if not src_root or not os.path.exists(pjoin(src_root, 'include', 'fuse_common.h')):
-        src_root = test_dir
-        while src_root != '/':
-            if os.path.exists(pjoin(src_root, 'include', 'fuse_common.h')):
-                break
-            src_root = os.path.dirname(src_root)
-
-    # Verify we found the source root
-    if not os.path.exists(pjoin(src_root, 'include', 'fuse_common.h')):
-        pytest.skip(f"Could not find source root from {test_dir}")
-
-    # Parse fuse_common.h to extract all FUSE_CAP_* definitions
-    header_caps = set()
-    header_path = pjoin(src_root, 'include', 'fuse_common.h')
-    with open(header_path, 'r') as f:
-        for line in f:
-            match = re.match(r'#define\s+(FUSE_CAP_\w+)\s+', line)
-            if match:
-                header_caps.add(match.group(1))
-
-    # Parse printcap.c to extract all FUSE_CAP_* entries in the capabilities array
-    # Skip commented lines
-    printcap_caps = set()
-    printcap_path = pjoin(src_root, 'example', 'printcap.c')
-    with open(printcap_path, 'r') as f:
-        for line in f:
-            # Skip lines that are commented out
-            if re.match(r'^\s*//', line):
-                continue
-            match = re.search(r'\{\s*(FUSE_CAP_\w+),\s*"', line)
-            if match:
-                printcap_caps.add(match.group(1))
-
-    # Compare
-    missing_caps = header_caps - printcap_caps
-    extra_caps = printcap_caps - header_caps
-
-    # Build detailed error message
-    if missing_caps or extra_caps:
-        msg = []
-        msg.append(f"\nSource root: {src_root}")
-        msg.append(f"Header path: {header_path}")
-        msg.append(f"Printcap path: {printcap_path}")
-        msg.append(f"Found {len(header_caps)} caps in header: {sorted(header_caps)}")
-        msg.append(f"Found {len(printcap_caps)} caps in printcap: {sorted(printcap_caps)}")
-        if missing_caps:
-            msg.append(f"Missing in printcap.c: {sorted(missing_caps)}")
-        if extra_caps:
-            msg.append(f"Extra in printcap.c: {sorted(extra_caps)}")
-        assert False, "\n".join(msg)
 
 
 # avoid warning about unused import

@@ -513,7 +513,7 @@ struct fuse_lowlevel_ops {
 	 *  - When writeback caching is disabled, the filesystem is
 	 *    expected to properly handle the O_APPEND flag and ensure
 	 *    that each write is appending to the end of the file.
-	 *
+	 * 
 	 *  - When writeback caching is enabled, the kernel will
 	 *    handle O_APPEND. However, unless all changes to the file
 	 *    come through the kernel this will not work reliably. The
@@ -1307,11 +1307,11 @@ struct fuse_lowlevel_ops {
 
 	/**
 	 * Create a tempfile
-	 *
+	 * 
 	 * Tempfile means an anonymous file. It can be made into a normal file later
 	 * by using linkat or such.
-	 *
-	 * If this is answered with an error ENOSYS this is treated by the kernel as
+	 * 
+	 * If this is answered with an error ENOSYS this is treated by the kernel as 
 	 * a permanent failure and it will disable the feature and not ask again.
 	 *
 	 * Valid replies:
@@ -1341,22 +1341,6 @@ struct fuse_lowlevel_ops {
 	 */
 	void (*statx)(fuse_req_t req, fuse_ino_t ino, int flags, int mask,
 		      struct fuse_file_info *fi);
-
-	/**
-	 * Synchronize the filesystem.
-	 *
-	 * Causes all dirty file data and filesystem metadata to be written to
-	 * underlying persistent storage.
-	 *
-	 * Supported since Linux kernel 6.18, and only on fuseblk file servers.
-	 *
-	 * Valid replies:
-	 *   fuse_reply_err
-	 *
-	 * @param req request handle
-	 * @param ino the inode number
-	 */
-	void (*syncfs)(fuse_req_t req, fuse_ino_t ino);
 };
 
 /**
@@ -1749,8 +1733,7 @@ int fuse_reply_lseek(fuse_req_t req, off_t off);
  * @param attr_timeout	validity timeout (in seconds) for the attributes
  * @return zero for success, -errno for failure to send reply
  */
-int fuse_reply_statx(fuse_req_t req, int flags, const struct statx *statx,
-		     double attr_timeout);
+int fuse_reply_statx(fuse_req_t req, int flags, struct statx *statx, double attr_timeout);
 
 /* ----------------------------------------------------------- *
  * Notification						       *
@@ -1834,23 +1817,23 @@ int fuse_lowlevel_notify_inval_entry(struct fuse_session *se, fuse_ino_t parent,
 
 /**
  * Notify to expire parent attributes and the dentry matching parent/name
- *
+ * 
  * Same restrictions apply as for fuse_lowlevel_notify_inval_entry()
- *
+ * 
  * Compared to invalidating an entry, expiring the entry results not in a
  * forceful removal of that entry from kernel cache but instead the next access
  * to it forces a lookup from the filesystem.
- *
+ * 
  * This makes a difference for overmounted dentries, where plain invalidation
- * would detach all submounts before dropping the dentry from the cache.
+ * would detach all submounts before dropping the dentry from the cache. 
  * If only expiry is set on the dentry, then any overmounts are left alone and
  * until ->d_revalidate() is called.
- *
+ * 
  * Note: ->d_revalidate() is not called for the case of following a submount,
  * so invalidation will only be triggered for the non-overmounted case.
  * The dentry could also be mounted in a different mount instance, in which case
  * any submounts will still be detached.
- *
+ * 
  * Added in FUSE protocol version 7.38. If the kernel does not support
  * this (or a newer) version, the function will return -ENOSYS and do nothing.
  *
@@ -1955,26 +1938,6 @@ int fuse_lowlevel_notify_store(struct fuse_session *se, fuse_ino_t ino,
 int fuse_lowlevel_notify_retrieve(struct fuse_session *se, fuse_ino_t ino,
 				  size_t size, off_t offset, void *cookie);
 
-/**
- * Notify to prune kernel's own dentry/inode caches
- *
- * Some fuse servers need to prune their caches, which can only be done if the
- * kernel's own dentry/inode caches are pruned first to avoid dangling
- * references.  Once dangling dentry/inode cache gets pruned, the inode gets
- * evicted and thus FUSE_FORGET will be sent to fuse server.  On receiving
- * FUSE_FORGET, fuse server can free their own inode cache with resources, e.g.
- * corresponding file handle.
- *
- * The notification takes an array of node IDs to try and get rid of.  It is
- * best-effort as inodes with active references are skipped.
- *
- * @param se the session object
- * @param nodeids the array of node IDs to be pruned
- * @param count the length of the nodeids array
- * @return zero for success, -errno for failure
- */
-int fuse_lowlevel_notify_prune(struct fuse_session *se,
-			       fuse_ino_t *nodeids, uint32_t count);
 
 /* ----------------------------------------------------------- *
  * Utility functions					       *
@@ -2134,7 +2097,7 @@ int fuse_parse_cmdline_312(struct fuse_args *args,
 struct fuse_session *
 fuse_session_new_versioned(struct fuse_args *args,
 			   const struct fuse_lowlevel_ops *op, size_t op_size,
-			   const struct libfuse_version *version, void *userdata);
+			   struct libfuse_version *version, void *userdata);
 
 /**
  * Create a low level session.
@@ -2354,38 +2317,6 @@ void fuse_session_unmount(struct fuse_session *se);
  */
 void fuse_session_destroy(struct fuse_session *se);
 
-/**
- * Callback type for timeout thread.
- *
- * @param data user-provided context
- */
-typedef void (*fuse_timeout_cb)(void *data);
-
-/**
- * Start a timeout thread that polls on the session file descriptor to detect
- * kernel (fuse-client) connection abort (POLLERR). If POLLERR is detected, it
- * will call fuse_session_exit() to terminate the session and will also restart
- * poll with the specified timeout. If the thread is not stopped within this
- * timeout, the callback is invoked (or exit(1) if cb is NULL). This is useful
- * to handle 'umount -f' and '/sys/fs/fuse/connections/NNN/abort'.
- *
- * @param se the session
- * @param timeout_sec timeout in seconds for polling
- * @param cb callback to invoke on timeout, or NULL to call exit(1)
- * @param cb_data user-provided context for callback
- * @return data pointer on success, NULL on failure
- */
-void *fuse_session_start_teardown_watchdog(struct fuse_session *se,
-					   int timeout_sec, fuse_timeout_cb cb,
-					   void *cb_data);
-
-/**
- * Stop the timeout thread.
- *
- * @param data pointer returned by fuse_start_timeout_thread()
- */
-void fuse_session_stop_teardown_watchdog(void *data);
-
 /* ----------------------------------------------------------- *
  * Custom event loop support                                   *
  * ----------------------------------------------------------- */
@@ -2404,7 +2335,7 @@ void fuse_session_stop_teardown_watchdog(void *data);
  * @param se the session
  * @return a file descriptor
  */
-int fuse_session_fd(const struct fuse_session *se);
+int fuse_session_fd(struct fuse_session *se);
 
 /**
  * Process a raw request supplied in a generic buffer
@@ -2429,38 +2360,6 @@ void fuse_session_process_buf(struct fuse_session *se,
  * @return the actual size of the raw request, or -errno on error
  */
 int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf);
-
-/**
- * Request synchronous FUSE_INIT, i.e. FUSE_INIT is handled by the
- * kernel before mount is returned.
- *
- * As FUSE_INIT also starts io-uring ring threads, fork() must not be
- * called after this if io-uring is enabled. Also see
- * fuse_session_daemonize_start().
- *
- * This must be called before fuse_session_mount() to have any effect.
- */
-void fuse_session_want_sync_init(struct fuse_session *se);
-
-/**
- * Check if the connection / session is using synchronous FUSE_INIT
- *
- * @param conn the connection
- * @return true if using synchronous FUSE_INIT, false otherwise
- */
-bool fuse_conn_is_sync_init(const struct fuse_conn_info *conn);
-
-/**
- * Enable debug output
- *
- * This allows to enable debug output without a command line parameter and
- * without the enforcement of the command line parameter to run in foreground.
- * The daemon needs to handle either fuse_log output via stderr, or
- * redirection to its own logs or via syslog.
- *
- * @param se the session
- */
-void fuse_session_set_debug(struct fuse_session *se);
 
 /**
  * Check if the request is submitted through fuse-io-uring

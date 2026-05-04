@@ -1,0 +1,44 @@
+package {
+    default_visibility: ["//visibility:public"],
+}
+
+cc_binary {
+    name: "fusermount3",
+    stem: "fusermount3",
+
+    srcs: [
+        "util/fusermount.c",
+        "lib/mount_util.c",
+    ],
+
+    local_include_dirs: [
+        ".",
+        "include",
+        "lib",
+        "util",
+    ],
+
+    cflags: [
+        "-Wall",
+        "-Wextra",
+
+        "-Wno-unused-parameter",
+        "-Wno-unused-function",
+        "-Wno-missing-field-initializers",
+        "-Wno-sign-compare",
+        "-Wno-unused-variable",
+        "-Wno-pointer-sign",
+
+        "-D_FILE_OFFSET_BITS=64",
+        "-DHAVE_CONFIG_H",
+        "-DPACKAGE_VERSION=\"3.18.2\"",
+        "-DFUSERMOUNT_DIR=\"/system/bin\"",
+    ],
+
+    recovery: true,
+    stl: "none",
+
+    symlinks: [
+        "fusermount",
+    ],
+}

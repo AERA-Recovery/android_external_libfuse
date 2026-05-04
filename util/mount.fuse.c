@@ -131,7 +131,7 @@ static int prepare_fuse_fd(const char *mountpoint, const char* subtype,
 	}
 
 	flags = fcntl(fuse_fd, F_GETFD);
-	if (flags == -1 || fcntl(fuse_fd, F_SETFD, flags & ~FD_CLOEXEC) == -1) {
+	if (flags == -1 || fcntl(fuse_fd, F_SETFD, flags & ~FD_CLOEXEC) == 1) {
 		fprintf(stderr, "%s: Failed to clear CLOEXEC: %s\n",
 			progname, strerror(errno));
 		exit(1);
@@ -305,7 +305,7 @@ int main(int argc, char *argv[])
 			}
 		} else	if (strcmp(argv[i], "-o") == 0) {
 			char *opts;
-			const char *opt;
+			char *opt;
 			i++;
 			if (i == argc)
 				break;
@@ -420,7 +420,7 @@ int main(int argc, char *argv[])
 	if (pass_fuse_fd)  {
 		fuse_fd = prepare_fuse_fd(mountpoint, type, options);
 		dev_fd_mountpoint = xrealloc(NULL, 20);
-		snprintf(dev_fd_mountpoint, 20, "/dev/fd/%d", fuse_fd);
+		snprintf(dev_fd_mountpoint, 20, "/dev/fd/%u", fuse_fd);
 		mountpoint = dev_fd_mountpoint;
 	}
 

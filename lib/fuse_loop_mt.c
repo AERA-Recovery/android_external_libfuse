@@ -162,7 +162,7 @@ static void *fuse_do_work(void *data)
 		 * are not created on a burst of FORGET messages
 		 */
 		if (!(w->fbuf.flags & FUSE_BUF_IS_FD)) {
-			const struct fuse_in_header *in = w->fbuf.mem;
+			struct fuse_in_header *in = w->fbuf.mem;
 
 			if (in->opcode == FUSE_FORGET ||
 			    in->opcode == FUSE_BATCH_FORGET)
@@ -256,7 +256,7 @@ int fuse_start_thread(pthread_t *thread_id, void *(*func)(void *), void *arg)
 	return 0;
 }
 
-static int fuse_clone_chan_fd_default(const struct fuse_session *se)
+static int fuse_clone_chan_fd_default(struct fuse_session *se)
 {
 	int res;
 	int clonefd;
@@ -381,8 +381,6 @@ int err;
 	} else {
 		/* The caller does not care about parameters - use the default */
 		config = fuse_loop_cfg_create();
-		if (!config)
-			return -ENOMEM;
 		created_config = 1;
 	}
 
@@ -429,14 +427,15 @@ int err;
 
 	if (created_config) {
 		fuse_loop_cfg_destroy(config);
+		config = NULL;
 	}
 
 	return err;
 }
 
-int fuse_session_loop_mt_32(struct fuse_session *se, const struct fuse_loop_config_v1 *config_v1);
+int fuse_session_loop_mt_32(struct fuse_session *se, struct fuse_loop_config_v1 *config_v1);
 FUSE_SYMVER("fuse_session_loop_mt_32", "fuse_session_loop_mt@FUSE_3.2")
-int fuse_session_loop_mt_32(struct fuse_session *se, const struct fuse_loop_config_v1 *config_v1)
+int fuse_session_loop_mt_32(struct fuse_session *se, struct fuse_loop_config_v1 *config_v1)
 {
 	int err;
 	struct fuse_loop_config *config = NULL;
@@ -445,7 +444,7 @@ int fuse_session_loop_mt_32(struct fuse_session *se, const struct fuse_loop_conf
 		/* convert the given v1 config */
 		config = fuse_loop_cfg_create();
 		if (config == NULL)
-			return -ENOMEM;
+			return ENOMEM;
 
 		fuse_loop_cfg_convert(config, config_v1);
 	}
@@ -464,8 +463,6 @@ int fuse_session_loop_mt_31(struct fuse_session *se, int clone_fd)
 {
 	int err;
 	struct fuse_loop_config *config = fuse_loop_cfg_create();
-	if (!config)
-		return -ENOMEM;
 	if (clone_fd > 0)
 		 fuse_loop_cfg_set_clone_fd(config, clone_fd);
 	err = fuse_session_loop_mt_312(se, config);
@@ -494,7 +491,7 @@ void fuse_loop_cfg_destroy(struct fuse_loop_config *config)
 	free(config);
 }
 
-int fuse_loop_cfg_verify(const struct fuse_loop_config *config)
+int fuse_loop_cfg_verify(struct fuse_loop_config *config)
 {
 	if (config->version_id != FUSE_LOOP_MT_V2_IDENTIFIER)
 		return -EINVAL;
@@ -503,16 +500,8 @@ int fuse_loop_cfg_verify(const struct fuse_loop_config *config)
 }
 
 void fuse_loop_cfg_convert(struct fuse_loop_config *config,
-			   const struct fuse_loop_config_v1 *v1_conf)
+			   struct fuse_loop_config_v1 *v1_conf)
 {
-	/*
-	 * In the v1 API, max_idle_threads was the effective pool cap —
-	 * threads beyond max_idle_threads were destroyed after each request.
-	 * Set max_threads to the same value to preserve that behaviour.
-	 * Set max_threads first so the subsequent set_idle_threads call
-	 * does not trigger the max_idle > max_threads warning.
-	 */
-	fuse_loop_cfg_set_max_threads(config, v1_conf->max_idle_threads);
 	fuse_loop_cfg_set_idle_threads(config, v1_conf->max_idle_threads);
 
 	fuse_loop_cfg_set_clone_fd(config, v1_conf->clone_fd);
@@ -529,31 +518,12 @@ void fuse_loop_cfg_set_idle_threads(struct fuse_loop_config *config,
 				 FUSE_LOOP_MT_MAX_THREADS);
 		return;
 	}
-	/*
-	 * Warn if max_idle_threads > max_threads —
-	 * idle thread reaping would never trigger since the pool can never
-	 * exceed max_threads.
-	 */
-	if (value > 0 && value > config->max_threads)
-		fuse_log(FUSE_LOG_WARNING,
-			 "fuse: max_idle_threads %u is greater than max_threads %u\n",
-			 value, config->max_threads);
 	config->max_idle_threads = value;
 }
 
 void fuse_loop_cfg_set_max_threads(struct fuse_loop_config *config,
 				   unsigned int value)
 {
-	/*
-	 * Warn if max_threads < max_idle_threads —
-	 * idle thread reaping would never trigger since the pool can never
-	 * exceed max_threads.
-	 */
-	if (config->max_idle_threads > 0 &&
-	    value < (unsigned int)config->max_idle_threads)
-		fuse_log(FUSE_LOG_WARNING,
-			 "fuse: max_threads %u is less than max_idle_threads %d\n",
-			 value, config->max_idle_threads);
 	config->max_threads = value;
 }
 

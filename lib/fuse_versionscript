@@ -222,18 +222,6 @@ FUSE_3.18 {
 		fuse_fs_statx;
 } FUSE_3.17;
 
-FUSE_3.19 {
-	global:
-		fuse_session_start_teardown_watchdog;
-		fuse_session_stop_teardown_watchdog;
-		fuse_lowlevel_notify_prune;
-		fuse_daemonize_early_start;
-		fuse_daemonize_early_success;
-		fuse_daemonize_early_fail;
-		fuse_daemonize_early_is_active;
-		fuse_session_set_debug;
-} FUSE_3.18;
-
 # Local Variables:
 # indent-tabs-mode: t
 # End:
