@@ -2,6 +2,28 @@ package {
     default_visibility: ["//visibility:public"],
 }
 
+cc_library_static {
+    name: "libaera_fuse3",
+    recovery_available: true,
+    srcs: [
+        "lib/fuse.c", "lib/fuse_loop.c", "lib/aera_loop_single.c",
+        "lib/fuse_lowlevel.c", "lib/fuse_opt.c", "lib/fuse_signals.c",
+        "lib/buffer.c", "lib/cuse_lowlevel.c", "lib/helper.c",
+        "lib/modules/subdir.c", "lib/mount_util.c", "lib/fuse_log.c",
+        "lib/compat.c", "lib/util.c", "lib/mount.c",
+    ],
+    local_include_dirs: [".", "include", "lib"],
+    export_include_dirs: ["include"],
+    shared_libs: ["libdl"],
+    cflags: [
+        "-D_GNU_SOURCE", "-D_FILE_OFFSET_BITS=64", "-DFUSE_USE_VERSION=317",
+        "-DHAVE_LIBFUSE_PRIVATE_CONFIG_H", "-DFUSERMOUNT_DIR=\"/system/bin\"",
+        "-DAERA_FUSE_SINGLE_THREADED",
+        "-Wno-error", "-Wno-unused-parameter", "-Wno-macro-redefined",
+    ],
+    stl: "none",
+}
+
 cc_binary {
     name: "fusermount3",
     stem: "fusermount3",

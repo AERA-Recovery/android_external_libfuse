@@ -4959,20 +4959,30 @@ static void *fuse_prune_nodes(void *fuse)
 
 int fuse_start_cleanup_thread(struct fuse *f)
 {
+#ifdef AERA_FUSE_SINGLE_THREADED
+	/* The NAS helper disables remembered entries and does not need pruning. */
+	(void)f;
+	return 0;
+#else
 	if (lru_enabled(f))
 		return fuse_start_thread(&f->prune_thread, fuse_prune_nodes, f);
 
 	return 0;
+#endif
 }
 
 void fuse_stop_cleanup_thread(struct fuse *f)
 {
+#ifdef AERA_FUSE_SINGLE_THREADED
+	(void)f;
+#else
 	if (lru_enabled(f)) {
 		pthread_mutex_lock(&f->lock);
 		pthread_cancel(f->prune_thread);
 		pthread_mutex_unlock(&f->lock);
 		pthread_join(f->prune_thread, NULL);
 	}
+#endif
 }
 
 /*
